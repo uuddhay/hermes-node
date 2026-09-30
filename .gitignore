@@ -1,0 +1,10 @@
+# Never let a secret or private clone leak into this public repo
+*.env
+.env
+enrollment_tokens.json
+*.bak-*
+hermes-skills/
+hermes-config-bundle/
+__pycache__/
+*.pyc
+.DS_Store
