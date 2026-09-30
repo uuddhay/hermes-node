@@ -111,12 +111,48 @@ fi
 # 6. Install Hermes (editable git checkout via uv)
 step "Installing Hermes (editable git checkout)"
 HERMES_AGENT_DIR="$HERMES_HOME/hermes-agent"
+# venv dir is named "venv" (not ".venv") to match the live install convention.
+VENV_DIR="$HERMES_AGENT_DIR/venv"
+VENV_BIN="$VENV_DIR/bin"
+HERMES_BIN="$VENV_BIN/hermes"
 if [ ! -d "$HERMES_AGENT_DIR" ]; then
   act "git clone https://github.com/NousResearch/hermes-agent.git -> $HERMES_AGENT_DIR" \
     git clone https://github.com/NousResearch/hermes-agent.git "$HERMES_AGENT_DIR"
-  act "uv venv + uv pip install -e in $HERMES_AGENT_DIR" bash -c "cd '$HERMES_AGENT_DIR' && uv venv && uv pip install -e ."
+  act "uv venv venv + uv pip install -e in $HERMES_AGENT_DIR" bash -c \
+    "cd '$HERMES_AGENT_DIR' && uv venv venv && VIRTUAL_ENV='$VENV_DIR' PATH='$VENV_BIN:\$PATH' uv pip install -e ."
 else
   info "$HERMES_AGENT_DIR already exists, skipping clone+install"
+fi
+
+# 6b. Put the venv's bin dir on PATH and PROVE hermes resolves before
+# anything downstream (step 10) relies on a bare `hermes` call.
+step "Resolving the hermes CLI on PATH"
+if [ -d "$VENV_BIN" ]; then
+  case ":$PATH:" in
+    *":$VENV_BIN:"*) ;;
+    *) PATH="$VENV_BIN:$PATH"; export PATH; info "prepended $VENV_BIN to PATH for this session" ;;
+  esac
+  act "persist $VENV_BIN on PATH via shell rc" bash -c "
+    RC_FILE=\"\$HOME/.\$( [ -n \\\"\${ZSH_VERSION:-}\\\" ] && echo zshrc || echo bashrc )\"
+    if ! grep -qF '$VENV_BIN' \"\$RC_FILE\" 2>/dev/null; then
+      printf '\n# hermes-node: put hermes venv on PATH\nexport PATH=\"$VENV_BIN:\$PATH\"\n' >> \"\$RC_FILE\"
+    fi
+  "
+fi
+if [ "$DRY_RUN" != "1" ]; then
+  if [ ! -x "$HERMES_BIN" ]; then
+    echo "" >&2
+    echo "ERROR: hermes CLI not found at $HERMES_BIN after install." >&2
+    echo "Check the 'uv pip install -e .' output above for errors, then re-run this installer." >&2
+    exit 1
+  fi
+  if ! VER_OUT=$("$HERMES_BIN" --version 2>&1); then
+    echo "" >&2
+    echo "ERROR: '$HERMES_BIN --version' failed:" >&2
+    echo "$VER_OUT" >&2
+    exit 1
+  fi
+  info "hermes CLI OK: $VER_OUT ($HERMES_BIN)"
 fi
 
 # 7. Apply carried core patches deliberately
@@ -152,8 +188,9 @@ fi
 
 # 10. Gateway install + start
 step "Installing and starting the Hermes gateway"
-act "hermes gateway install" hermes gateway install
-act "hermes gateway start" hermes gateway start
+# Resolve by absolute path, not bare `hermes` — see step 6b.
+act "hermes gateway install" "$HERMES_BIN" gateway install
+act "hermes gateway start" "$HERMES_BIN" gateway start
 
 # 11. Enroll
 step "Enrolling with your Hermes mesh"

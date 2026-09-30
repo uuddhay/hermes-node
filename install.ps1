@@ -82,15 +82,53 @@ if (-not (Test-Path $configDir)) {
 # 6. Install Hermes (editable git checkout via uv)
 Step "Installing Hermes (editable git checkout)"
 $hermesAgentDir = Join-Path $HermesHome "hermes-agent"
+# venv dir is named "venv" (not ".venv") to match the live install convention.
+$venvDir     = Join-Path $hermesAgentDir "venv"
+$venvScripts = Join-Path $venvDir "Scripts"
+$hermesExe   = Join-Path $venvScripts "hermes.exe"
 if (-not (Test-Path $hermesAgentDir)) {
     Act "git clone https://github.com/NousResearch/hermes-agent.git -> $hermesAgentDir" { git clone https://github.com/NousResearch/hermes-agent.git $hermesAgentDir }
-    Act "uv venv + uv pip install -e (editable) in $hermesAgentDir" {
+    Act "uv venv venv + uv pip install -e (editable) in $hermesAgentDir" {
         Push-Location $hermesAgentDir
-        uv venv
+        uv venv venv
+        $env:VIRTUAL_ENV = $venvDir
+        $env:Path = "$venvScripts;$env:Path"
         uv pip install -e .
         Pop-Location
     }
 } else { Info "$hermesAgentDir already exists, skipping clone+install (re-run scripts/apply_core_patches.py manually if you need to re-apply)" }
+
+# 6b. Put the venv's Scripts dir on PATH and PROVE hermes resolves before
+# anything downstream (step 10) relies on a bare `hermes` call.
+Step "Resolving the hermes CLI on PATH"
+if (Test-Path $venvScripts) {
+    if ($env:Path -notlike "*$venvScripts*") {
+        $env:Path = "$venvScripts;$env:Path"
+        Info "prepended $venvScripts to PATH for this session"
+    }
+    Act "persist $venvScripts on the user PATH" {
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ($null -eq $userPath) { $userPath = "" }
+        if ($userPath -notlike "*$venvScripts*") {
+            [Environment]::SetEnvironmentVariable("Path", "$venvScripts;$userPath", "User")
+            Info "persisted to user PATH (new shells will pick it up)"
+        } else { Info "already on user PATH" }
+    }
+}
+if (-not $DryRun) {
+    if (-not (Test-Path $hermesExe)) {
+        Write-Host "`nERROR: hermes CLI not found at $hermesExe after install." -ForegroundColor Red
+        Write-Host "Check the 'uv pip install -e .' output above for errors, then re-run this installer." -ForegroundColor Red
+        exit 1
+    }
+    $verOut = & $hermesExe --version 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "`nERROR: '$hermesExe --version' failed:`n$verOut" -ForegroundColor Red
+        Write-Host "The hermes CLI did not resolve correctly after install. Re-run this installer, or inspect $hermesAgentDir manually." -ForegroundColor Red
+        exit 1
+    }
+    Info "hermes CLI OK: $verOut ($hermesExe)"
+}
 
 # 7. Apply carried core patches deliberately (never blind-overwrite)
 Step "Applying core patches from config bundle"
@@ -116,8 +154,10 @@ if (Test-Path $syncScript) {
 
 # 10. Gateway install + start
 Step "Installing and starting the Hermes gateway"
-Act "hermes gateway install" { hermes gateway install }
-Act "hermes gateway start" { hermes gateway start }
+# Resolve by absolute path, not bare `hermes` — a fresh shell in this same
+# process may not have picked up the PATH change from step 6b yet.
+Act "hermes gateway install" { & $hermesExe gateway install }
+Act "hermes gateway start" { & $hermesExe gateway start }
 
 # 11. Enroll: tailnet discovery + hub registration
 Step "Enrolling with your Hermes mesh"
